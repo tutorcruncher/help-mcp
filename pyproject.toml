@@ -1,0 +1,51 @@
+[project]
+name = "tc-help-mcp"
+version = "0.1.0"
+description = "Remote MCP server giving Claude live access to TutorCruncher and Bobbin product documentation (Intercom help centres + the tc-api-docs API reference)."
+requires-python = ">=3.12"
+dependencies = [
+    "fastmcp>=3.4.2,<4",
+    "httpx>=0.28",
+    "pyyaml>=6.0",
+    "markdownify>=0.13",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-xdist>=3.6",
+    "pytest-cov>=5.0",
+    "coverage>=7.6",
+    "ruff>=0.8",
+    "ty>=0.0.1a1",
+    "pre-commit>=4.0",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.format]
+quote-style = "single"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+addopts = "--tb=native"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+
+[tool.ty.rules]
+# unresolved-import is noisy until deps are synced; keep real checks on.

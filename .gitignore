@@ -1,0 +1,32 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ty_cache/
+.coverage
+.coverage.*
+coverage.xml
+.env
+*.egg-info/
+
+# Byte-compiled / optimized
+*.py[cod]
+*.pyo
+*.so
+
+# Distribution / packaging
+build/
+dist/
+.eggs/
+
+# Editors
+.vscode/
+.idea/
+.DS_Store
+
+# Logs
+*.log
+
+# Local MCP / tooling
+.mcp.json

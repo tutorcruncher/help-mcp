@@ -1,0 +1,32 @@
+name: Deploy to Heroku
+
+# Container-stack apps can't use Heroku's built-in GitHub auto-deploy (that path
+# is buildpack-only). This workflow builds the Docker image and releases it to
+# Heroku on every push to main.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: heroku-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
+      HEROKU_APP: tc-help-mcp
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Heroku CLI
+        run: curl https://cli-assets.heroku.com/install.sh | sh
+
+      - name: Build, push and release container
+        run: |
+          heroku container:login
+          heroku container:push web --app "$HEROKU_APP"
+          heroku container:release web --app "$HEROKU_APP"
