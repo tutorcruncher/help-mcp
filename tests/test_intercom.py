@@ -67,9 +67,8 @@ def catalogue_handler(url, params, headers):
             }
         return FakeResponse(json_data={'data': [article], 'pages': {'total_pages': 1}})
     if path == '/help_center/collections':
-        return FakeResponse(json_data={'data': [{'id': 5, 'name': 'Billing'}] if is_tc else []})
-    if path == '/help_center/sections':
-        return FakeResponse(json_data={'data': [] if is_tc else [{'id': 7, 'name': 'Teaching'}]})
+        collections = [{'id': 5, 'name': 'Billing'}] if is_tc else [{'id': 7, 'name': 'Teaching'}]
+        return FakeResponse(json_data={'data': collections, 'pages': {'total_pages': 1}})
     raise AssertionError(f'unexpected path {path}')
 
 

@@ -139,20 +139,27 @@ class IntercomClient:
         return await self.cache.get_or_load(('articles', source.product), loader)
 
     async def _collection_names(self, source: HelpSource) -> dict[str, str]:
-        """Map collection/section id -> name for a workspace (cached, best-effort)."""
+        """Map collection id -> name for a workspace (cached, paged).
+
+        Intercom's Help Center exposes collections (including nested ones) via
+        ``/help_center/collections``; there is no separate sections resource in the
+        current API. Articles with no parent collection are simply left unmapped.
+        """
 
         async def loader() -> dict[str, str]:
             names: dict[str, str] = {}
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                for path in ('/help_center/collections', '/help_center/sections'):
-                    try:
-                        payload = await self._get_json(client, source, path, {'per_page': PER_PAGE})
-                    except IntercomError as exc:
-                        logger.warning('collection lookup failed for %s: %s', source.product, exc)
-                        continue
-                    for item in payload.get('data') or []:
+                for page in range(1, MAX_PAGES + 1):
+                    payload = await self._get_json(
+                        client, source, '/help_center/collections', {'page': page, 'per_page': PER_PAGE}
+                    )
+                    data = payload.get('data') or []
+                    for item in data:
                         if item.get('id') is not None and item.get('name'):
                             names[str(item['id'])] = item['name']
+                    total_pages = (payload.get('pages') or {}).get('total_pages')
+                    if not data or (total_pages is not None and page >= total_pages):
+                        break
             return names
 
         return await self.cache.get_or_load(('collections', source.product), loader)
