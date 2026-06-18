@@ -84,17 +84,19 @@ make run-dev               # serve on 0.0.0.0:$PORT
 Built as a single-stage Docker image and released to Heroku (container stack) by
 `.github/workflows/deploy.yml` on push to `main`. Set secrets via Heroku config, never the repo:
 
+Deploys run via `.github/workflows/deploy.yml` (GitHub Actions builds the image and
+releases it to the container-stack Heroku app `help-mcp` on push to `main`). The repo
+needs a `HEROKU_API_KEY` secret; the Heroku app needs its config vars set:
+
 ```bash
-heroku create tc-help-mcp
-heroku stack:set container -a tc-help-mcp
-heroku config:set -a tc-help-mcp \
+heroku stack:set container -a help-mcp
+heroku config:set -a help-mcp \
   GITHUB_OAUTH_CLIENT_ID=... GITHUB_OAUTH_CLIENT_SECRET=... \
-  BASE_URL=https://tc-help-mcp.herokuapp.com \
+  BASE_URL=https://help-mcp-5710e51f90a5.herokuapp.com \
   JWT_SIGNING_KEY="$(openssl rand -hex 32)" \
   ALLOWED_GITHUB_ORG=tutorcruncher \
   INTERCOM_TOKEN_TUTORCRUNCHER=... INTERCOM_TOKEN_BOBBIN=...
-git push origin main
 ```
 
-Then register `https://tc-help-mcp.herokuapp.com/mcp` as a remote connector in the team's
-Claude.ai workspace.
+Then register `https://help-mcp-5710e51f90a5.herokuapp.com/mcp` as a remote connector in
+the team's Claude.ai workspace.
