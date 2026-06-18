@@ -19,17 +19,23 @@ from app.auth import build_auth
 from app.cache import TTLCache
 from app.config import Settings, load_settings
 from app.intercom import IntercomClient, IntercomError
+from app.observability import configure_observability, tool_span
 
 
 def _readable_errors(fn: Callable[..., Awaitable]) -> Callable[..., Awaitable]:
-    """Convert upstream client errors into clean ToolErrors the model can relay."""
+    """Wrap a tool in an observability span and clean up upstream errors.
+
+    Upstream client failures become readable ToolErrors the model can relay; the
+    span (a no-op unless Logfire is configured) records the call's timing and errors.
+    """
 
     @functools.wraps(fn)
     async def wrapper(*args, **kwargs):
-        try:
-            return await fn(*args, **kwargs)
-        except (IntercomError, ApiDocsError) as exc:
-            raise ToolError(str(exc)) from exc
+        with tool_span(getattr(fn, '__name__', 'tool')):
+            try:
+                return await fn(*args, **kwargs)
+            except (IntercomError, ApiDocsError) as exc:
+                raise ToolError(str(exc)) from exc
 
     return wrapper
 
@@ -147,6 +153,7 @@ def build_server(settings: Settings) -> FastMCP:
 def main() -> None:
     """Load settings, build the server and run it over Streamable HTTP."""
     logging.basicConfig(level=logging.INFO)
+    configure_observability()
     settings = load_settings()
     server = build_server(settings)
     server.run(transport='http', host='0.0.0.0', port=settings.port)

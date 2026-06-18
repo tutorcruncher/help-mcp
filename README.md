@@ -62,6 +62,15 @@ commit values. Each Intercom workspace has its own token — one token does not 
 | `CACHE_TTL_SECONDS` | `300` | In-memory cache TTL (latency/rate-limit protection only). |
 | `SEARCH_RESULT_LIMIT` | `8` | Max `search_help` results. |
 | `PORT` | `8000` | Bind port (Heroku sets this automatically). |
+| `LOGFIRE_TOKEN` | — | Optional. When set, traces httpx upstream calls + tool spans to [Pydantic Logfire](https://logfire.pydantic.dev). Unset = fully disabled. |
+
+### Observability
+
+Observability is opt-in via `LOGFIRE_TOKEN`. With it set, the server instruments httpx
+(every Intercom and GitHub request traced with status and latency) and wraps each tool
+call in a span. With no token, Logfire runs in local-only mode and exports nothing — tests
+and local runs are unaffected. httpx instrumentation uses conservative defaults (no header
+or body capture), so workspace tokens and credentials are never sent to Logfire.
 
 ### Adding another product
 
