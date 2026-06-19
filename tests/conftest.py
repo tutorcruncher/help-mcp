@@ -26,6 +26,7 @@ def settings(help_sources) -> Settings:
         allowed_github_org='tutorcruncher',
         allow_ungated=False,
         allowed_redirect_uris=['https://claude.ai/api/mcp/auth_callback'],
+        redis_url=None,
         intercom_api_base='https://api.intercom.io',
         help_sources=help_sources,
         tc_api_docs_repo='tutorcruncher/tc-api-docs',

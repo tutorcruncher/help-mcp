@@ -53,6 +53,7 @@ commit values. Each Intercom workspace has its own token — one token does not 
 | `ALLOW_UNGATED` | `0` | Set `1` to run without an org gate (local dev only). |
 | `ALLOWED_REDIRECT_URIS` | `https://claude.ai/api/mcp/auth_callback` | Permitted OAuth client redirect URIs. |
 | `JWT_SIGNING_KEY` | — | Signing key for FastMCP-issued JWTs. |
+| `REDIS_URL` | — | Redis URL for persisting OAuth state across restarts. Required on ephemeral-filesystem hosts (e.g. Heroku, where daily dyno cycling otherwise wipes the on-disk store and expires every connection). Unset = default on-disk store. |
 | `INTERCOM_API_BASE` | `https://api.intercom.io` | Intercom API host (same for both workspaces). |
 | `INTERCOM_TOKEN_TUTORCRUNCHER` | — | TutorCruncher Intercom workspace token. |
 | `INTERCOM_TOKEN_BOBBIN` | — | Bobbin Intercom workspace token. |
@@ -105,6 +106,13 @@ heroku config:set -a help-mcp \
   JWT_SIGNING_KEY="$(openssl rand -hex 32)" \
   ALLOWED_GITHUB_ORG=tutorcruncher \
   INTERCOM_TOKEN_TUTORCRUNCHER=... INTERCOM_TOKEN_BOBBIN=...
+```
+
+Provision Redis so OAuth state survives Heroku's daily dyno cycling — without it every
+connected client must re-authenticate each day. The add-on sets `REDIS_URL` automatically:
+
+```bash
+heroku addons:create heroku-redis:mini -a help-mcp
 ```
 
 Then register `https://help-mcp-5710e51f90a5.herokuapp.com/mcp` as a remote connector in

@@ -59,6 +59,10 @@ class Settings:
             ALLOWED_GITHUB_ORG fails closed rather than exposing tools to all.
         allowed_redirect_uris: OAuth client redirect URIs permitted during dynamic
             client registration / authorization.
+        redis_url: Redis connection URL for persisting OAuth state across restarts.
+            When set, OAuth client registrations and tokens survive process restarts
+            (essential on hosts with an ephemeral filesystem, e.g. Heroku dyno
+            cycling). When unset, FastMCP falls back to its default on-disk store.
         intercom_api_base: Intercom API host (same for every workspace).
         help_sources: Configured Intercom help-centre workspaces (one per product).
         tc_api_docs_repo: owner/name of the API-docs GitHub repo.
@@ -77,6 +81,7 @@ class Settings:
     allowed_github_org: str | None
     allow_ungated: bool
     allowed_redirect_uris: list[str]
+    redis_url: str | None
     intercom_api_base: str
     help_sources: list[HelpSource]
     tc_api_docs_repo: str
@@ -117,6 +122,7 @@ def load_settings() -> Settings:
         allowed_redirect_uris=os.environ.get(
             'ALLOWED_REDIRECT_URIS', 'https://claude.ai/api/mcp/auth_callback'
         ).split(),
+        redis_url=os.environ.get('REDIS_URL') or None,
         intercom_api_base=os.environ.get('INTERCOM_API_BASE', 'https://api.intercom.io').rstrip('/'),
         help_sources=_load_help_sources(),
         tc_api_docs_repo=os.environ.get('TC_API_DOCS_REPO', 'tutorcruncher/tc-api-docs'),

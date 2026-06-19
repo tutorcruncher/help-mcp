@@ -9,6 +9,7 @@ dependencies = [
     "pyyaml>=6.0",
     "markdownify>=0.13",
     "logfire[httpx]>=4.37",
+    "py-key-value-aio[redis]>=0.4.5",
 ]
 
 [dependency-groups]

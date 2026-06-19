@@ -22,6 +22,7 @@ def test_load_settings_reads_environment(monkeypatch):
     monkeypatch.setenv('ALLOWED_GITHUB_ORG', 'tutorcruncher')
     monkeypatch.setenv('ALLOW_UNGATED', '1')
     monkeypatch.setenv('ALLOWED_REDIRECT_URIS', 'https://claude.ai/api/mcp/auth_callback https://example.test/cb')
+    monkeypatch.setenv('REDIS_URL', 'rediss://user:pass@redis.example.test:6380/0')
     monkeypatch.setenv('INTERCOM_API_BASE', 'https://api.intercom.io/')
     monkeypatch.setenv('INTERCOM_TOKEN_TUTORCRUNCHER', 'tc-tok')
     monkeypatch.setenv('INTERCOM_TOKEN_BOBBIN', 'bobbin-tok')
@@ -45,6 +46,7 @@ def test_load_settings_reads_environment(monkeypatch):
         'https://claude.ai/api/mcp/auth_callback',
         'https://example.test/cb',
     ]
+    assert settings.redis_url == 'rediss://user:pass@redis.example.test:6380/0'
     assert settings.intercom_api_base == 'https://api.intercom.io'
     assert settings.help_sources == [
         HelpSource('tutorcruncher', 'tc-tok', 'https://help.tutorcruncher.com'),
@@ -74,7 +76,7 @@ def test_help_sources_skip_products_without_tokens(monkeypatch):
 def test_defaults_fail_closed(monkeypatch):
     """Access defaults to a gated, fail-closed posture with sensible defaults."""
     _set_required(monkeypatch)
-    for var in ('ALLOWED_GITHUB_ORG', 'ALLOW_UNGATED', 'ALLOWED_REDIRECT_URIS', 'GITHUB_TOKEN'):
+    for var in ('ALLOWED_GITHUB_ORG', 'ALLOW_UNGATED', 'ALLOWED_REDIRECT_URIS', 'GITHUB_TOKEN', 'REDIS_URL'):
         monkeypatch.delenv(var, raising=False)
 
     settings = load_settings()
@@ -82,6 +84,7 @@ def test_defaults_fail_closed(monkeypatch):
     assert settings.allowed_github_org is None
     assert settings.allow_ungated is False
     assert settings.allowed_redirect_uris == ['https://claude.ai/api/mcp/auth_callback']
+    assert settings.redis_url is None
     assert settings.github_scopes == ['read:org', 'read:user']
     assert settings.intercom_api_base == 'https://api.intercom.io'
     assert settings.github_token is None
