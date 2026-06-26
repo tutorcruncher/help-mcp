@@ -7,7 +7,7 @@ are skipped, so the server runs with whatever workspaces are configured.
 """
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 # Known help-centre products: (product, help_centre_base). The live source list is
 # built from these by pairing each with its INTERCOM_TOKEN_<PRODUCT> env var. Add a
@@ -35,11 +35,42 @@ class HelpSource:
             every result so Claude attributes answers to the right product.
         token: Intercom access token for this workspace (never logged).
         help_centre_base: Public help-centre base URL, used for display only.
+        author_id: Intercom admin id used as the author when creating articles in
+            this workspace. Intercom requires an author for article creation; unset
+            (None) means article creation for this product must pass an explicit id.
     """
 
     product: str
     token: str
     help_centre_base: str
+    author_id: int | None = None
+
+
+@dataclass(frozen=True)
+class ImageStoreConfig:
+    """External object store for hosting refreshed help-article screenshots.
+
+    Intercom has no public image-upload API, so new screenshots are hosted here and
+    embedded into article bodies by public URL. ``configured`` is False until both a
+    bucket and a public base URL are set, in which case image upload is unavailable.
+
+    Attributes:
+        bucket: Target bucket name (S3-compatible).
+        public_base: Public base URL the bucket is served from (no trailing slash);
+            uploaded objects are addressed as ``{public_base}/{key}``.
+        region: Optional region for the storage client.
+        key_prefix: Optional key prefix (folder) under which objects are stored.
+    """
+
+    bucket: str | None = None
+    public_base: str | None = None
+    region: str | None = None
+    key_prefix: str = ''
+
+    @property
+    def configured(self) -> bool:
+        """True when enough is set to host and address an uploaded image."""
+        return bool(self.bucket and self.public_base)
 
 
 @dataclass(frozen=True)
@@ -71,6 +102,7 @@ class Settings:
         cache_ttl_seconds: In-memory cache TTL — latency/rate-limit protection only.
         search_result_limit: Max results returned by search_help.
         port: Port the MCP server binds to.
+        image_store: External object store for hosting refreshed screenshots.
     """
 
     github_client_id: str
@@ -90,6 +122,7 @@ class Settings:
     cache_ttl_seconds: float
     search_result_limit: int
     port: int
+    image_store: ImageStoreConfig = field(default_factory=ImageStoreConfig)
 
     def help_source(self, product: str) -> HelpSource | None:
         """Return the configured help source for a product, or None if absent."""
@@ -105,8 +138,21 @@ def _load_help_sources() -> list[HelpSource]:
     for product, base in KNOWN_HELP_PRODUCTS:
         token = os.environ.get(f'INTERCOM_TOKEN_{product.upper()}')
         if token:
-            sources.append(HelpSource(product=product, token=token, help_centre_base=base))
+            author_raw = os.environ.get(f'INTERCOM_AUTHOR_ID_{product.upper()}')
+            author_id = int(author_raw) if author_raw else None
+            sources.append(HelpSource(product=product, token=token, help_centre_base=base, author_id=author_id))
     return sources
+
+
+def _load_image_store() -> ImageStoreConfig:
+    """Build the image-store config from IMAGE_STORE_* env vars (all optional)."""
+    public_base = (os.environ.get('IMAGE_STORE_PUBLIC_BASE') or '').rstrip('/')
+    return ImageStoreConfig(
+        bucket=os.environ.get('IMAGE_STORE_BUCKET') or None,
+        public_base=public_base or None,
+        region=os.environ.get('IMAGE_STORE_REGION') or None,
+        key_prefix=(os.environ.get('IMAGE_STORE_KEY_PREFIX') or '').strip('/'),
+    )
 
 
 def load_settings() -> Settings:
@@ -131,4 +177,5 @@ def load_settings() -> Settings:
         cache_ttl_seconds=float(os.environ.get('CACHE_TTL_SECONDS', '300')),
         search_result_limit=int(os.environ.get('SEARCH_RESULT_LIMIT', '8')),
         port=int(os.environ.get('PORT', '8000')),
+        image_store=_load_image_store(),
     )

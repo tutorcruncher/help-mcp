@@ -93,6 +93,39 @@ def test_defaults_fail_closed(monkeypatch):
     assert settings.port == 8000
 
 
+def test_load_settings_reads_author_ids_and_image_store(monkeypatch):
+    """Author ids attach to their workspace and IMAGE_STORE_* builds the image config."""
+    _set_required(monkeypatch)
+    monkeypatch.setenv('INTERCOM_TOKEN_TUTORCRUNCHER', 'tc-tok')
+    monkeypatch.setenv('INTERCOM_AUTHOR_ID_TUTORCRUNCHER', '42')
+    monkeypatch.delenv('INTERCOM_TOKEN_BOBBIN', raising=False)
+    monkeypatch.setenv('IMAGE_STORE_BUCKET', 'shots-bucket')
+    monkeypatch.setenv('IMAGE_STORE_PUBLIC_BASE', 'https://cdn.example.com/')
+    monkeypatch.setenv('IMAGE_STORE_REGION', 'eu-west-1')
+    monkeypatch.setenv('IMAGE_STORE_KEY_PREFIX', '/help-shots/')
+
+    settings = load_settings()
+
+    assert settings.help_sources == [HelpSource('tutorcruncher', 'tc-tok', 'https://help.tutorcruncher.com', 42)]
+    assert settings.image_store.bucket == 'shots-bucket'
+    assert settings.image_store.public_base == 'https://cdn.example.com'  # trailing slash stripped
+    assert settings.image_store.region == 'eu-west-1'
+    assert settings.image_store.key_prefix == 'help-shots'  # surrounding slashes stripped
+    assert settings.image_store.configured is True
+
+
+def test_image_store_unconfigured_by_default(monkeypatch):
+    """With no IMAGE_STORE_* vars the store is present but not configured."""
+    _set_required(monkeypatch)
+    for var in ('IMAGE_STORE_BUCKET', 'IMAGE_STORE_PUBLIC_BASE', 'IMAGE_STORE_REGION', 'IMAGE_STORE_KEY_PREFIX'):
+        monkeypatch.delenv(var, raising=False)
+
+    settings = load_settings()
+
+    assert settings.image_store.configured is False
+    assert settings.image_store.bucket is None
+
+
 def test_load_settings_missing_required_raises(monkeypatch):
     """A missing required variable raises a clear error naming the variable."""
     monkeypatch.delenv('JWT_SIGNING_KEY', raising=False)
