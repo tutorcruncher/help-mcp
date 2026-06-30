@@ -232,11 +232,14 @@ def build_server(settings: Settings) -> FastMCP:
         Intercom has no image-upload API, so a screenshot is hosted externally and
         embedded by URL. This server is remote and cannot read your local files, so
         it returns a presigned PUT URL: upload the local file's bytes directly to
-        `put_url` (e.g. `curl -sS -X PUT --upload-file <local_path> "<put_url>"`),
-        then use `public_url` as new_url in replace_help_article_image or as an
-        <img src> in an article body. Do NOT read the image into context.
+        `put_url`, sending the returned content_type as the Content-Type header — e.g.
+        `curl -sS -X PUT -H "Content-Type: <content_type>" --upload-file <local_path> "<put_url>"`
+        (the header MUST match or S3 rejects the signed request, and it makes the
+        stored object render as an image instead of downloading). Then use `public_url`
+        as new_url in replace_help_article_image or as an <img src> in an article body.
+        Do NOT read the image into context.
 
-        Returns {"put_url": "...", "public_url": "..."}.
+        Returns {"put_url": "...", "public_url": "...", "content_type": "..."}.
 
         Args:
             product: The product the image belongs to ("tutorcruncher" or "bobbin");
