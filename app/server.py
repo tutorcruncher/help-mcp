@@ -6,6 +6,7 @@ tc-api-docs GitHub repo for the API reference — through a short-TTL cache. Acc
 gated to active members of a configured GitHub org via OrgMembershipMiddleware.
 """
 
+import asyncio
 import functools
 import logging
 from collections.abc import Awaitable, Callable
@@ -18,6 +19,7 @@ from app.apidocs import ApiDocsClient, ApiDocsError
 from app.auth import build_auth
 from app.cache import TTLCache
 from app.config import Settings, load_settings
+from app.images import ImageStore, ImageStoreError
 from app.intercom import IntercomClient, IntercomError
 from app.observability import configure_observability, tool_span
 
@@ -34,7 +36,7 @@ def _readable_errors(fn: Callable[..., Awaitable]) -> Callable[..., Awaitable]:
         with tool_span(getattr(fn, '__name__', 'tool')):
             try:
                 return await fn(*args, **kwargs)
-            except (IntercomError, ApiDocsError) as exc:
+            except (IntercomError, ApiDocsError, ImageStoreError) as exc:
                 raise ToolError(str(exc)) from exc
 
     return wrapper
@@ -63,6 +65,7 @@ def build_server(settings: Settings) -> FastMCP:
     cache = TTLCache(settings.cache_ttl_seconds)
     intercom = IntercomClient(settings.help_sources, settings.intercom_api_base, cache, settings.search_result_limit)
     apidocs = ApiDocsClient(settings.tc_api_docs_repo, settings.tc_api_docs_ref, settings.github_token, cache)
+    images = ImageStore(settings.image_store)
 
     server = FastMCP(name='ProductDocs', auth=build_auth(settings))
     if settings.allowed_github_org:
@@ -146,6 +149,91 @@ def build_server(settings: Settings) -> FastMCP:
                 (e.g. "clients", "contractors").
         """
         return await apidocs.get_section(section_id)
+
+    # ─── Write tools (Intercom Articles, draft-only) ──────────────────────────
+    # Always registered, but every write is forced to Intercom state="draft": this
+    # server never publishes live. A human reviews and publishes the draft in Intercom.
+
+    @server.tool
+    @_readable_errors
+    async def get_help_article_raw(product: str, article_id: str) -> dict:
+        """Return one article's RAW body HTML plus a parsed list of its images.
+
+        Use this (not get_help_article, which returns cleaned markdown) when you need
+        to edit the article: it preserves the exact Intercom HTML and lists every
+        image with its src, alt, filename, nearest heading and surrounding text — the
+        context needed to decide which app page each screenshot shows.
+
+        Args:
+            product: The product the article belongs to ("tutorcruncher" or "bobbin").
+            article_id: The article id from list_help_articles or search_help.
+        """
+        return await intercom.get_article_raw(product, article_id)
+
+    @server.tool
+    @_readable_errors
+    async def update_help_article(
+        product: str, article_id: str, body_html: str | None = None, title: str | None = None
+    ) -> dict:
+        """Update an article's body and/or title, saving it as a DRAFT (never live).
+
+        The change is saved with Intercom state="draft"; a human must publish it in
+        the Intercom UI. Pass full replacement HTML in body_html. To swap a single
+        image, prefer replace_help_article_image.
+
+        Args:
+            product: The product the article belongs to ("tutorcruncher" or "bobbin").
+            article_id: The article id to update.
+            body_html: Full replacement body HTML (Intercom's allowed subset). Omit to leave unchanged.
+            title: New title. Omit to leave unchanged.
+        """
+        return await intercom.update_article(product, article_id, title=title, body_html=body_html)
+
+    @server.tool
+    @_readable_errors
+    async def create_help_article(product: str, title: str, body_html: str, parent_id: str | None = None) -> dict:
+        """Create a new help article as a DRAFT (never published live).
+
+        Args:
+            product: The product the article belongs to ("tutorcruncher" or "bobbin").
+            title: Article title.
+            body_html: Body HTML (Intercom's allowed subset).
+            parent_id: Optional collection/section id to file the article under.
+        """
+        return await intercom.create_article(product, title, body_html, parent_id=parent_id)
+
+    @server.tool
+    @_readable_errors
+    async def replace_help_article_image(product: str, article_id: str, old_src: str, new_url: str) -> dict:
+        """Swap a single image URL in an article's body, saving it as a DRAFT.
+
+        Replaces every occurrence of old_src with new_url in the raw body and saves a
+        draft — a surgical string swap that preserves the rest of the HTML exactly.
+        Errors if old_src is not present. Get old_src from get_help_article_raw and
+        new_url from upload_help_image.
+
+        Args:
+            product: The product the article belongs to ("tutorcruncher" or "bobbin").
+            article_id: The article id to edit.
+            old_src: The existing image src (full URL) to replace.
+            new_url: The new image URL to insert.
+        """
+        return await intercom.replace_article_image(product, article_id, old_src, new_url)
+
+    @server.tool
+    @_readable_errors
+    async def upload_help_image(image_path: str) -> dict:
+        """Host a local image file in the configured store and return its public URL.
+
+        Intercom has no image-upload API, so a refreshed screenshot is hosted
+        externally and embedded by URL. Returns {"url": "..."} for use as new_url in
+        replace_help_article_image.
+
+        Args:
+            image_path: Absolute path to the image file on disk.
+        """
+        url = await asyncio.to_thread(images.upload, image_path)
+        return {'url': url}
 
     return server
 

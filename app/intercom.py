@@ -12,6 +12,9 @@ access token differs (TutorCruncher and Bobbin are separate Intercom workspaces)
 import asyncio
 import logging
 import re
+from html.parser import HTMLParser
+from posixpath import basename
+from urllib.parse import urlparse
 
 import httpx
 from markdownify import markdownify
@@ -68,6 +71,110 @@ def clean_html(html: str | None) -> str:
     return strip_boilerplate(markdown)
 
 
+# Block-level tags whose boundaries should read as whitespace, so text from adjacent
+# blocks (e.g. a heading then a paragraph) doesn't run together in surrounding_text.
+_BLOCK_TAGS = frozenset(
+    {
+        'p',
+        'div',
+        'br',
+        'section',
+        'header',
+        'footer',
+        'article',
+        'blockquote',
+        'ul',
+        'ol',
+        'li',
+        'table',
+        'thead',
+        'tbody',
+        'tr',
+        'td',
+        'th',
+        'h1',
+        'h2',
+        'h3',
+        'h4',
+        'h5',
+        'h6',
+    }
+)
+
+
+class _ImageExtractor(HTMLParser):
+    """Collect ``<img>`` tags from article HTML with their nearby textual context.
+
+    For each image we record its src/alt/filename, the most recent heading, and the
+    accumulated text position so a window of preceding prose can be sliced out after
+    parsing — signals the screenshot pipeline uses to infer which page each image shows.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.text_parts: list[str] = []
+        self.images: list[dict] = []
+        self.current_heading = ''
+        self._in_heading = False
+        self._heading_buf: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in _BLOCK_TAGS:
+            self.text_parts.append(' ')
+        if re.fullmatch(r'h[1-6]', tag):
+            self._in_heading = True
+            self._heading_buf = []
+        elif tag == 'img':
+            attr = {name: (value or '') for name, value in attrs}
+            src = attr.get('src', '')
+            self.images.append(
+                {
+                    'img_src': src,
+                    'alt': attr.get('alt', ''),
+                    'filename': basename(urlparse(src).path),
+                    'heading': self.current_heading,
+                    '_pos': len(''.join(self.text_parts)),
+                }
+            )
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._in_heading and re.fullmatch(r'h[1-6]', tag):
+            self.current_heading = ''.join(self._heading_buf).strip()
+            self._in_heading = False
+        if tag in _BLOCK_TAGS:
+            self.text_parts.append(' ')
+
+    def handle_data(self, data: str) -> None:
+        if self._in_heading:
+            self._heading_buf.append(data)
+        self.text_parts.append(data)
+
+
+def parse_images(html: str | None, context_chars: int = 200) -> list[dict]:
+    """Extract images from article HTML with context, in document order.
+
+    Args:
+        html: Raw article body HTML (None/empty yields no images).
+        context_chars: How many characters of preceding prose to keep per image.
+
+    Returns:
+        One dict per ``<img>``: ``img_src``, ``alt``, ``filename``, ``heading`` (the
+        nearest preceding heading) and ``surrounding_text`` (whitespace-collapsed
+        prose immediately before the image).
+    """
+    if not html:
+        return []
+    extractor = _ImageExtractor()
+    extractor.feed(html)
+    full_text = ''.join(extractor.text_parts)
+    results: list[dict] = []
+    for image in extractor.images:
+        pos = image.pop('_pos')
+        window = re.sub(r'\s+', ' ', full_text[max(0, pos - context_chars) : pos]).strip()
+        results.append({**image, 'surrounding_text': window})
+    return results
+
+
 class IntercomClient:
     """Fetch and clean help-centre articles across one or more Intercom workspaces."""
 
@@ -95,6 +202,24 @@ class IntercomClient:
             raise IntercomError(f"Unknown product '{product}'. Configured products: {configured}.")
         return [source]
 
+    def _resolve_one(self, product: str | None) -> HelpSource:
+        """Return exactly one workspace; write ops must target a single product."""
+        if product is None:
+            configured = ', '.join(self._sources) or 'none'
+            raise IntercomError(f'A product is required for this operation (one of: {configured}).')
+        return self._resolve(product)[0]
+
+    @staticmethod
+    def _article_summary(source: HelpSource, article: dict) -> dict:
+        """Return the standard light summary of an article after a write."""
+        return {
+            'product': source.product,
+            'id': str(article.get('id')),
+            'title': article.get('title') or '',
+            'url': article.get('url') or '',
+            'state': article.get('state') or '',
+        }
+
     def _headers(self, source: HelpSource) -> dict[str, str]:
         """Return Intercom auth/version headers for a workspace."""
         return {
@@ -120,6 +245,31 @@ class IntercomClient:
                 raise IntercomError(f'Intercom returned {response.status_code} for {path}.')
             return response.json()
         raise IntercomError(f'Intercom remained unavailable for {path} after retries.')
+
+    async def _send_json(
+        self,
+        client: httpx.AsyncClient,
+        source: HelpSource,
+        method: str,
+        path: str,
+        payload: dict,
+    ):
+        """Send a JSON write (POST/PUT), retrying transient 429/5xx responses with backoff."""
+        url = f'{self.api_base}{path}'
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                response = await client.request(method, url, json=payload, headers=self._headers(source))
+            except httpx.HTTPError as exc:
+                raise IntercomError(f'Intercom {method} to {path} failed: {exc}') from exc
+            if response.status_code in (429, 500, 502, 503, 504) and attempt < MAX_RETRIES:
+                delay = float(response.headers.get('Retry-After', 2**attempt))
+                logger.warning('Intercom %s on %s %s; retrying in %ss', response.status_code, method, path, delay)
+                await asyncio.sleep(delay)
+                continue
+            if response.status_code >= 400:
+                raise IntercomError(f'Intercom returned {response.status_code} for {method} {path}.')
+            return response.json()
+        raise IntercomError(f'Intercom remained unavailable for {method} {path} after retries.')
 
     async def _fetch_all_articles(self, source: HelpSource) -> list[dict]:
         """Page through a workspace's Articles API fully (cached under the TTL)."""
@@ -249,3 +399,97 @@ class IntercomClient:
             'url': article.get('url') or '',
             'body': clean_html(article.get('body')),
         }
+
+    async def get_article_raw(self, product: str, article_id: str) -> dict:
+        """Return one article's RAW body HTML plus a parsed list of its images.
+
+        Unlike get_article (which returns cleaned markdown), this preserves the exact
+        Intercom HTML so an ``<img src>`` can be swapped surgically and PUT back valid.
+        """
+        source = self._resolve_one(product)
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            article = await self._get_json(client, source, f'/articles/{article_id}')
+        body = article.get('body') or ''
+        return {
+            'product': source.product,
+            'id': str(article.get('id')),
+            'title': article.get('title') or '',
+            'url': article.get('url') or '',
+            'parent_id': article.get('parent_id'),
+            'state': article.get('state') or '',
+            'body_html': body,
+            'images': parse_images(body),
+        }
+
+    async def update_article(
+        self,
+        product: str,
+        article_id: str,
+        *,
+        title: str | None = None,
+        body_html: str | None = None,
+    ) -> dict:
+        """Update an article's title and/or body, saving it as a DRAFT.
+
+        ``state`` is always forced to ``draft`` — this client never publishes live; a
+        human publishes the draft in the Intercom UI.
+        """
+        source = self._resolve_one(product)
+        payload: dict = {'state': 'draft'}
+        if title is not None:
+            payload['title'] = title
+        if body_html is not None:
+            payload['body'] = body_html
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            article = await self._send_json(client, source, 'PUT', f'/articles/{article_id}', payload)
+        return self._article_summary(source, article)
+
+    async def create_article(
+        self,
+        product: str,
+        title: str,
+        body_html: str,
+        parent_id: str | None = None,
+        author_id: int | None = None,
+    ) -> dict:
+        """Create a new article as a DRAFT.
+
+        Intercom requires an author; ``author_id`` falls back to the workspace's
+        configured INTERCOM_AUTHOR_ID, and a clear error is raised if neither is set.
+        """
+        source = self._resolve_one(product)
+        resolved_author = author_id if author_id is not None else source.author_id
+        if resolved_author is None:
+            raise IntercomError(
+                f"Cannot create an article for '{product}': no author id. Pass author_id or set "
+                f'INTERCOM_AUTHOR_ID_{product.upper()}.'
+            )
+        payload: dict = {'title': title, 'body': body_html, 'author_id': int(resolved_author), 'state': 'draft'}
+        if parent_id is not None:
+            payload['parent_id'] = parent_id
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            article = await self._send_json(client, source, 'POST', '/articles', payload)
+        return self._article_summary(source, article)
+
+    async def replace_article_image(self, product: str, article_id: str, old_src: str, new_url: str) -> dict:
+        """Swap a single ``<img src>`` in an article's body and save it as a DRAFT.
+
+        Fetches the raw body, replaces every occurrence of ``old_src`` with ``new_url``
+        (a plain string substitution — no HTML re-serialisation, so Intercom's allowed
+        subset is preserved), then PUTs it back as a draft. Raises if ``old_src`` is
+        not present so a mistaken src can never silently no-op.
+        """
+        source = self._resolve_one(product)
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            article = await self._get_json(client, source, f'/articles/{article_id}')
+            body = article.get('body') or ''
+            occurrences = body.count(old_src)
+            if occurrences == 0:
+                raise IntercomError(f'Image src not found in article {article_id}: {old_src}')
+            new_body = body.replace(old_src, new_url)
+            updated = await self._send_json(
+                client, source, 'PUT', f'/articles/{article_id}', {'body': new_body, 'state': 'draft'}
+            )
+        summary = self._article_summary(source, updated)
+        summary['replaced'] = occurrences
+        return summary
