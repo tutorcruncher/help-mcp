@@ -12,6 +12,11 @@ dependencies = [
     "py-key-value-aio[redis]>=0.4.5",
 ]
 
+[project.optional-dependencies]
+# Image hosting for the draft-only screenshot-replacement tools. Only needed by the
+# server instance that uploads images (e.g. the support team's write-enabled deploy).
+s3 = ["boto3>=1.34"]
+
 [dependency-groups]
 dev = [
     "pytest>=8.3",

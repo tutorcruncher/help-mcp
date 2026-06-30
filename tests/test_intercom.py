@@ -2,7 +2,7 @@ import pytest
 
 from app.cache import TTLCache
 from app.config import HelpSource
-from app.intercom import IntercomClient, IntercomError, clean_html, strip_boilerplate
+from app.intercom import IntercomClient, IntercomError, clean_html, parse_images, strip_boilerplate
 
 API_BASE = 'https://api.intercom.io'
 
@@ -35,6 +35,11 @@ class FakeAsyncClient:
 
     async def get(self, url, params=None, headers=None):
         return self._handler(url, params or {}, headers or {})
+
+    async def request(self, method, url, json=None, headers=None):
+        # Writes reuse the same handler; method + body are passed via the params dict
+        # (a GET has no 'method' key, so handlers branch on params.get('method')).
+        return self._handler(url, {'method': method, 'json': json}, headers or {})
 
 
 def patch_http(monkeypatch, handler):
@@ -215,3 +220,158 @@ async def test_retries_then_raises_on_persistent_429(monkeypatch):
 
 async def _no_sleep(_seconds):
     return None
+
+
+# ─── Image parsing ────────────────────────────────────────────────────────────
+
+
+def test_parse_images_extracts_context_and_heading():
+    """Each <img> is returned with its src, alt, filename, nearest heading and prose."""
+    html = (
+        '<h2>Billing settings</h2>'
+        '<p>Go to Settings then Billing to see your plan.</p>'
+        '<img src="https://downloads.intercomcdn.com/abc.png" alt="Billing page">'
+        '<h2>Lessons</h2><img src="https://x.example/logo.svg">'
+    )
+
+    images = parse_images(html)
+
+    assert len(images) == 2
+    assert images[0] == {
+        'img_src': 'https://downloads.intercomcdn.com/abc.png',
+        'alt': 'Billing page',
+        'filename': 'abc.png',
+        'heading': 'Billing settings',
+        'surrounding_text': 'Billing settings Go to Settings then Billing to see your plan.',
+    }
+    assert images[1]['heading'] == 'Lessons'
+    assert images[1]['filename'] == 'logo.svg'
+    assert images[1]['alt'] == ''
+
+
+def test_parse_images_empty_body():
+    """A missing or empty body yields no images."""
+    assert parse_images(None) == []
+    assert parse_images('') == []
+
+
+# ─── Write / raw tools (all draft-only) ───────────────────────────────────────
+
+
+async def test_get_article_raw_returns_html_and_images(monkeypatch):
+    """get_article_raw preserves the exact HTML and lists parsed images."""
+
+    def handler(url, params, headers):
+        assert url == f'{API_BASE}/articles/10'
+        assert 'tc-token' in headers.get('Authorization', '')
+        return FakeResponse(
+            json_data={
+                'id': 10,
+                'title': 'Refunds',
+                'state': 'published',
+                'parent_id': 5,
+                'url': 'https://help.tutorcruncher.com/refunds',
+                'body': '<h2>Refunds</h2><p>See the invoice screen.</p><img src="https://cdn/i/old.png" alt="invoice">',
+            }
+        )
+
+    patch_http(monkeypatch, handler)
+    client = build_client()
+
+    article = await client.get_article_raw('tutorcruncher', '10')
+
+    assert article['body_html'].startswith('<h2>Refunds</h2>')
+    assert article['state'] == 'published'
+    assert article['parent_id'] == 5
+    assert [img['img_src'] for img in article['images']] == ['https://cdn/i/old.png']
+
+
+async def test_update_article_forces_draft_state(monkeypatch):
+    """update_article PUTs only the provided fields and always coerces state=draft."""
+    captured = {}
+
+    def handler(url, params, headers):
+        captured['url'] = url
+        captured['method'] = params.get('method')
+        captured['json'] = params.get('json')
+        return FakeResponse(json_data={'id': 10, 'title': 'Refunds', 'state': 'draft', 'url': 'u'})
+
+    patch_http(monkeypatch, handler)
+    client = build_client()
+
+    result = await client.update_article('tutorcruncher', '10', body_html='<p>new</p>')
+
+    assert captured['method'] == 'PUT'
+    assert captured['url'] == f'{API_BASE}/articles/10'
+    assert captured['json'] == {'state': 'draft', 'body': '<p>new</p>'}
+    assert result == {'product': 'tutorcruncher', 'id': '10', 'title': 'Refunds', 'url': 'u', 'state': 'draft'}
+
+
+async def test_create_article_uses_author_and_draft(monkeypatch):
+    """create_article posts the workspace author id and forces state=draft."""
+    captured = {}
+
+    def handler(url, params, headers):
+        captured['url'] = url
+        captured['method'] = params.get('method')
+        captured['json'] = params.get('json')
+        return FakeResponse(json_data={'id': 99, 'title': 'New', 'state': 'draft', 'url': 'u'})
+
+    patch_http(monkeypatch, handler)
+    sources = [HelpSource('tutorcruncher', 'tc-token', 'https://help.tutorcruncher.com', author_id=42)]
+    client = IntercomClient(sources, API_BASE, TTLCache(ttl=300.0), search_limit=8)
+
+    result = await client.create_article('tutorcruncher', 'New', '<p>hi</p>', parent_id='7')
+
+    assert captured['method'] == 'POST'
+    assert captured['url'] == f'{API_BASE}/articles'
+    assert captured['json'] == {
+        'title': 'New',
+        'body': '<p>hi</p>',
+        'author_id': 42,
+        'state': 'draft',
+        'parent_id': '7',
+    }
+    assert result['id'] == '99'
+
+
+async def test_create_article_without_author_raises(monkeypatch):
+    """Creating an article with no configured/explicit author id fails clearly."""
+    patch_http(monkeypatch, lambda *a: FakeResponse(json_data={}))
+    client = build_client()  # SOURCES carry no author_id
+
+    with pytest.raises(IntercomError, match='no author id'):
+        await client.create_article('tutorcruncher', 'New', '<p>hi</p>')
+
+
+async def test_replace_article_image_swaps_all_and_drafts(monkeypatch):
+    """replace_article_image swaps every occurrence and saves a draft."""
+    state = {}
+
+    def handler(url, params, headers):
+        if params.get('method') is None:  # the GET of the current body
+            return FakeResponse(json_data={'id': 10, 'body': '<img src="OLD"> then <img src="OLD">'})
+        state['json'] = params.get('json')  # the PUT
+        return FakeResponse(json_data={'id': 10, 'title': 'T', 'state': 'draft', 'url': 'u'})
+
+    patch_http(monkeypatch, handler)
+    client = build_client()
+
+    result = await client.replace_article_image('tutorcruncher', '10', 'OLD', 'NEW')
+
+    assert state['json'] == {'body': '<img src="NEW"> then <img src="NEW">', 'state': 'draft'}
+    assert result['replaced'] == 2
+    assert result['state'] == 'draft'
+
+
+async def test_replace_article_image_missing_src_raises(monkeypatch):
+    """A src that isn't present errors rather than silently writing an unchanged draft."""
+
+    def handler(url, params, headers):
+        return FakeResponse(json_data={'id': 10, 'body': '<p>no images here</p>'})
+
+    patch_http(monkeypatch, handler)
+    client = build_client()
+
+    with pytest.raises(IntercomError, match='not found'):
+        await client.replace_article_image('tutorcruncher', '10', 'OLD', 'NEW')

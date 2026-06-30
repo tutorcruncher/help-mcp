@@ -43,6 +43,11 @@ EXPECTED_TOOLS = {
     'list_api_sections',
     'search_api_docs',
     'get_api_section',
+    'get_help_article_raw',
+    'update_help_article',
+    'create_help_article',
+    'replace_help_article_image',
+    'upload_help_image',
 }
 
 
@@ -95,7 +100,7 @@ async def test_build_server_key_auth_skips_org_middleware(settings):
 
 
 async def test_build_server_registers_all_tools(settings):
-    """All six documentation tools are registered."""
+    """All documentation tools plus the draft-only write tools are registered."""
     server = build_server(settings)
 
     tools = await server._list_tools()
