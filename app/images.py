@@ -22,6 +22,7 @@ import hashlib
 import logging
 import mimetypes
 from pathlib import Path
+from uuid import uuid4
 
 from app.config import ImageStoreConfig
 
@@ -59,17 +60,24 @@ class ImageStore:
         self._client = boto3.client('s3', region_name=self._config.region)
         return self._client
 
-    def _key_for(self, path: Path, data: bytes) -> str:
-        """Build the storage key: ``<prefix>/<stem>-<hash8><suffix>``."""
+    def _key_for(self, path: Path, data: bytes, product: str | None = None) -> str:
+        """Build the storage key: ``<prefix>/<product>/<stem>-<hash8><suffix>``.
+
+        Empty path segments are dropped, so the key is ``<product>/<file>`` when no
+        base prefix is set, ``<prefix>/<file>`` when no product is given, etc.
+        """
         digest = hashlib.sha256(data).hexdigest()[:8]
         name = f'{path.stem}-{digest}{path.suffix}'
-        return '/'.join(part for part in (self._config.key_prefix, name) if part)
+        return '/'.join(part for part in (self._config.key_prefix, product, name) if part)
 
-    def upload(self, image_path: str) -> str:
+    def upload(self, image_path: str, product: str | None = None) -> str:
         """Upload a local image file and return its public URL.
 
         Args:
             image_path: Absolute path to the image on disk.
+            product: Optional product id used as a key sub-folder (e.g. "bobbin" →
+                ``<prefix>/bobbin/<file>``), so each product's screenshots are kept
+                under its own path in the bucket.
 
         Returns:
             The public URL the uploaded image is served from.
@@ -84,7 +92,7 @@ class ImageStore:
         if not path.is_file():
             raise ImageStoreError(f'Image not found: {image_path}')
         data = path.read_bytes()
-        key = self._key_for(path, data)
+        key = self._key_for(path, data, product)
         content_type = mimetypes.guess_type(path.name)[0] or 'application/octet-stream'
         try:
             self._s3().put_object(Bucket=self._config.bucket, Key=key, Body=data, ContentType=content_type)
@@ -95,3 +103,43 @@ class ImageStore:
         url = f'{self._config.public_base}/{key}'
         logger.info('uploaded image %s -> %s', path.name, url)
         return url
+
+    def presign_put(self, filename: str, product: str | None = None, expires_in: int = 900) -> dict[str, str]:
+        """Return a short-lived presigned S3 PUT URL plus the eventual public URL.
+
+        For remote deployments that can't read the client's filesystem: the caller
+        (which has the local file but not the storage credentials) PUTs the bytes
+        directly to ``put_url``, and the object is then served at ``public_url``. The
+        object key gets a random suffix so repeated uploads of the same filename don't
+        collide. Only the filename (not the bytes) is needed here.
+
+        Args:
+            filename: The image's filename (used for the key's name + extension).
+            product: Optional product id used as a key sub-folder.
+            expires_in: Lifetime of the presigned URL in seconds.
+
+        Returns:
+            ``{"put_url": ..., "public_url": ...}``.
+
+        Raises:
+            ImageStoreError: If the store is unconfigured or presigning fails.
+        """
+        if not self._config.configured:
+            raise ImageStoreError('Image store not configured: set IMAGE_STORE_BUCKET and IMAGE_STORE_PUBLIC_BASE.')
+        name = Path(filename).name
+        key = '/'.join(
+            part
+            for part in (self._config.key_prefix, product, f'{Path(name).stem}-{uuid4().hex[:8]}{Path(name).suffix}')
+            if part
+        )
+        try:
+            put_url = self._s3().generate_presigned_url(
+                'put_object', Params={'Bucket': self._config.bucket, 'Key': key}, ExpiresIn=expires_in
+            )
+        except ImageStoreError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - surface any backend failure as a readable error
+            raise ImageStoreError(f'Failed to presign an upload for {name}: {exc}') from exc
+        public_url = f'{self._config.public_base}/{key}'
+        logger.info('presigned upload for %s -> %s', name, public_url)
+        return {'put_url': put_url, 'public_url': public_url}
