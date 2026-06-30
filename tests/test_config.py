@@ -1,5 +1,3 @@
-import pytest
-
 from app.config import HelpSource, load_settings
 
 REQUIRED = {
@@ -126,18 +124,19 @@ def test_image_store_unconfigured_by_default(monkeypatch):
     assert settings.image_store.bucket is None
 
 
-def test_load_settings_missing_required_raises(monkeypatch):
-    """A missing required variable raises a clear error naming the variable."""
+def test_partial_oauth_creds_disable_oauth(monkeypatch):
+    """OAuth vars are optional; a missing one just leaves oauth_enabled False (no raise)."""
     monkeypatch.delenv('JWT_SIGNING_KEY', raising=False)
     for name in ('GITHUB_OAUTH_CLIENT_ID', 'GITHUB_OAUTH_CLIENT_SECRET', 'BASE_URL'):
         monkeypatch.setenv(name, 'x')
 
-    with pytest.raises(RuntimeError, match='JWT_SIGNING_KEY'):
-        load_settings()
+    settings = load_settings()  # does not raise
+
+    assert settings.oauth_enabled is False
 
 
-def test_key_auth_parses_keys_and_skips_oauth_requirements(monkeypatch):
-    """With MCP_API_KEYS set, keys are parsed and the GitHub OAuth vars aren't required."""
+def test_key_auth_parses_keys_without_oauth(monkeypatch):
+    """Keys-only: keys parse, OAuth vars unset → key auth on, OAuth off."""
     for name in ('GITHUB_OAUTH_CLIENT_ID', 'GITHUB_OAUTH_CLIENT_SECRET', 'BASE_URL', 'JWT_SIGNING_KEY'):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv('MCP_API_KEYS', 'key-one, key-two key-three')
@@ -145,16 +144,28 @@ def test_key_auth_parses_keys_and_skips_oauth_requirements(monkeypatch):
     settings = load_settings()
 
     assert settings.key_auth_enabled is True
+    assert settings.oauth_enabled is False
     assert settings.mcp_api_keys == ['key-one', 'key-two', 'key-three']
-    assert settings.github_client_id == ''  # not required in key mode
 
 
-def test_no_api_keys_means_oauth_mode(monkeypatch):
-    """Without MCP_API_KEYS the server stays in OAuth mode (keys empty)."""
+def test_oauth_only_mode(monkeypatch):
+    """OAuth creds, no keys → OAuth on, key auth off."""
     _set_required(monkeypatch)
     monkeypatch.delenv('MCP_API_KEYS', raising=False)
 
     settings = load_settings()
 
+    assert settings.oauth_enabled is True
     assert settings.key_auth_enabled is False
     assert settings.mcp_api_keys == []
+
+
+def test_dual_auth_mode(monkeypatch):
+    """OAuth creds AND keys → both enabled (dual auth)."""
+    _set_required(monkeypatch)
+    monkeypatch.setenv('MCP_API_KEYS', 'key-one')
+
+    settings = load_settings()
+
+    assert settings.oauth_enabled is True
+    assert settings.key_auth_enabled is True

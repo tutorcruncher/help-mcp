@@ -7,7 +7,9 @@ from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
 from key_value.aio.stores.redis import RedisStore
 from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
 
-from app.auth import build_auth
+from app.auth import AUTH_MODE_CLAIM, KEY_AUTH_MODE, DualAuthProvider, build_auth
+
+NO_OAUTH = dict(github_client_id='', github_client_secret='', base_url='', jwt_signing_key='')
 
 
 def test_build_auth_without_redis_uses_default_store(settings):
@@ -32,17 +34,41 @@ def test_build_auth_with_redis_persists_encrypted_state(settings):
     assert isinstance(storage.key_value, RedisStore)
 
 
-def test_build_auth_uses_static_verifier_when_keys_set(settings):
-    """With MCP_API_KEYS configured, build_auth returns a key verifier, not OAuth."""
-    settings = dataclasses.replace(settings, mcp_api_keys=['key-one', 'key-two'])
+def test_build_auth_key_only_uses_static_verifier(settings):
+    """Keys but no OAuth credentials → a plain StaticTokenVerifier."""
+    settings = dataclasses.replace(settings, mcp_api_keys=['key-one', 'key-two'], **NO_OAUTH)
 
     provider = build_auth(settings)
 
     assert isinstance(provider, StaticTokenVerifier)
     assert not isinstance(provider, GitHubProvider)
-    # Each configured key authenticates as a distinct client (required by the verifier).
     assert set(provider.tokens) == {'key-one', 'key-two'}
     assert {claims['client_id'] for claims in provider.tokens.values()} == {'api-key-1', 'api-key-2'}
+    # Keys are tagged so the org gate can bypass them.
+    assert all(claims[AUTH_MODE_CLAIM] == KEY_AUTH_MODE for claims in provider.tokens.values())
+
+
+def test_build_auth_dual_when_oauth_and_keys(settings):
+    """OAuth credentials AND keys → a DualAuthProvider (serves OAuth + accepts keys)."""
+    settings = dataclasses.replace(settings, mcp_api_keys=['key-one'])
+
+    provider = build_auth(settings)
+
+    assert isinstance(provider, DualAuthProvider)
+    assert isinstance(provider, GitHubProvider)  # inherits the full OAuth flow
+    assert set(provider._static_tokens) == {'key-one'}
+
+
+async def test_dual_provider_accepts_static_key(settings):
+    """DualAuthProvider.verify_token accepts a configured key as a key-tagged client."""
+    provider = build_auth(dataclasses.replace(settings, mcp_api_keys=['key-one']))
+
+    token = await provider.verify_token('key-one')
+
+    assert token is not None
+    assert token.client_id == 'api-key-1'
+    assert token.claims[AUTH_MODE_CLAIM] == KEY_AUTH_MODE
+    assert await provider.verify_token('not-a-key') is None  # unknown → falls through to OAuth (invalid)
 
 
 @patch('app.auth.derive_jwt_key')
