@@ -103,6 +103,10 @@ class Settings:
         search_result_limit: Max results returned by search_help.
         port: Port the MCP server binds to.
         image_store: External object store for hosting refreshed screenshots.
+        mcp_api_keys: Static API keys for key-based auth. When non-empty, the server
+            authenticates clients by a Bearer key instead of GitHub OAuth, and the
+            GitHub OAuth credentials / org gating are not used (a valid key is the
+            gate). When empty, the server falls back to GitHub OAuth + org gating.
     """
 
     github_client_id: str
@@ -123,6 +127,12 @@ class Settings:
     search_result_limit: int
     port: int
     image_store: ImageStoreConfig = field(default_factory=ImageStoreConfig)
+    mcp_api_keys: list[str] = field(default_factory=list)
+
+    @property
+    def key_auth_enabled(self) -> bool:
+        """True when static API-key auth is configured (takes precedence over OAuth)."""
+        return bool(self.mcp_api_keys)
 
     def help_source(self, product: str) -> HelpSource | None:
         """Return the configured help source for a product, or None if absent."""
@@ -144,6 +154,11 @@ def _load_help_sources() -> list[HelpSource]:
     return sources
 
 
+def _load_api_keys() -> list[str]:
+    """Parse MCP_API_KEYS (comma- or whitespace-separated) into a list of keys."""
+    return [key for key in os.environ.get('MCP_API_KEYS', '').replace(',', ' ').split() if key]
+
+
 def _load_image_store() -> ImageStoreConfig:
     """Build the image-store config from IMAGE_STORE_* env vars (all optional)."""
     public_base = (os.environ.get('IMAGE_STORE_PUBLIC_BASE') or '').rstrip('/')
@@ -156,13 +171,25 @@ def _load_image_store() -> ImageStoreConfig:
 
 
 def load_settings() -> Settings:
-    """Build a Settings instance from the current environment."""
+    """Build a Settings instance from the current environment.
+
+    In key-auth mode (``MCP_API_KEYS`` set) the GitHub OAuth credentials are not
+    required, so the server can run with just API keys + Intercom tokens. In OAuth
+    mode they remain required and a missing one fails fast.
+    """
+    api_keys = _load_api_keys()
+    key_auth = bool(api_keys)
+
+    def _oauth_required(name: str) -> str:
+        """Required in OAuth mode; optional (default empty) in key-auth mode."""
+        return (os.environ.get(name) or '') if key_auth else _require(name)
+
     return Settings(
-        github_client_id=_require('GITHUB_OAUTH_CLIENT_ID'),
-        github_client_secret=_require('GITHUB_OAUTH_CLIENT_SECRET'),
-        base_url=_require('BASE_URL').rstrip('/'),
+        github_client_id=_oauth_required('GITHUB_OAUTH_CLIENT_ID'),
+        github_client_secret=_oauth_required('GITHUB_OAUTH_CLIENT_SECRET'),
+        base_url=_oauth_required('BASE_URL').rstrip('/'),
         github_scopes=os.environ.get('GITHUB_SCOPES', 'read:org read:user').split(),
-        jwt_signing_key=_require('JWT_SIGNING_KEY'),
+        jwt_signing_key=_oauth_required('JWT_SIGNING_KEY'),
         allowed_github_org=os.environ.get('ALLOWED_GITHUB_ORG') or None,
         allow_ungated=os.environ.get('ALLOW_UNGATED', '0') == '1',
         allowed_redirect_uris=os.environ.get(
@@ -178,4 +205,5 @@ def load_settings() -> Settings:
         search_result_limit=int(os.environ.get('SEARCH_RESULT_LIMIT', '8')),
         port=int(os.environ.get('PORT', '8000')),
         image_store=_load_image_store(),
+        mcp_api_keys=api_keys,
     )
