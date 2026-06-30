@@ -105,7 +105,7 @@ class ImageStore:
         return url
 
     def presign_put(self, filename: str, product: str | None = None, expires_in: int = 900) -> dict[str, str]:
-        """Return a short-lived presigned S3 PUT URL plus the eventual public URL.
+        """Return a short-lived presigned S3 PUT URL, its public URL, and content type.
 
         For remote deployments that can't read the client's filesystem: the caller
         (which has the local file but not the storage credentials) PUTs the bytes
@@ -113,13 +113,19 @@ class ImageStore:
         object key gets a random suffix so repeated uploads of the same filename don't
         collide. Only the filename (not the bytes) is needed here.
 
+        The content type (derived from the filename) is BOUND INTO the presigned URL,
+        so the client MUST send the matching ``Content-Type`` header on the PUT — this
+        ensures the stored object is e.g. ``image/png`` rather than the default
+        ``application/octet-stream`` (which makes Intercom/browsers download, not
+        render). ``content_type`` is returned so the caller can set that header.
+
         Args:
             filename: The image's filename (used for the key's name + extension).
             product: Optional product id used as a key sub-folder.
             expires_in: Lifetime of the presigned URL in seconds.
 
         Returns:
-            ``{"put_url": ..., "public_url": ...}``.
+            ``{"put_url": ..., "public_url": ..., "content_type": ...}``.
 
         Raises:
             ImageStoreError: If the store is unconfigured or presigning fails.
@@ -132,14 +138,17 @@ class ImageStore:
             for part in (self._config.key_prefix, product, f'{Path(name).stem}-{uuid4().hex[:8]}{Path(name).suffix}')
             if part
         )
+        content_type = mimetypes.guess_type(name)[0] or 'application/octet-stream'
         try:
             put_url = self._s3().generate_presigned_url(
-                'put_object', Params={'Bucket': self._config.bucket, 'Key': key}, ExpiresIn=expires_in
+                'put_object',
+                Params={'Bucket': self._config.bucket, 'Key': key, 'ContentType': content_type},
+                ExpiresIn=expires_in,
             )
         except ImageStoreError:
             raise
         except Exception as exc:  # noqa: BLE001 - surface any backend failure as a readable error
             raise ImageStoreError(f'Failed to presign an upload for {name}: {exc}') from exc
         public_url = f'{self._config.public_base}/{key}'
-        logger.info('presigned upload for %s -> %s', name, public_url)
-        return {'put_url': put_url, 'public_url': public_url}
+        logger.info('presigned upload for %s -> %s (%s)', name, public_url, content_type)
+        return {'put_url': put_url, 'public_url': public_url, 'content_type': content_type}

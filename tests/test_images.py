@@ -34,6 +34,9 @@ def test_presign_put_returns_signed_and_public_urls():
     key = fake.presigned[0]['Params']['Key']
     assert re.fullmatch(r'help/bobbin/tutors-add-[0-9a-f]{8}\.png', key)
     assert fake.presigned[0]['Params']['Bucket'] == 'b'
+    # Content type is bound into the signed URL so the stored object renders as an image.
+    assert fake.presigned[0]['Params']['ContentType'] == 'image/png'
+    assert result['content_type'] == 'image/png'
     assert result['public_url'] == f'https://cdn.example.com/{key}'
     assert result['put_url'].startswith('https://s3.example.test/')
 
