@@ -45,11 +45,12 @@ def _readable_errors(fn: Callable[..., Awaitable]) -> Callable[..., Awaitable]:
 def build_server(settings: Settings) -> FastMCP:
     """Build the auth-enabled docs server with its tools registered.
 
-    Auth is key-based when ``MCP_API_KEYS`` is set (a valid Bearer key is the gate);
-    otherwise GitHub OAuth is used and, when ``allowed_github_org`` is set, tool
-    access is gated to active members of that org. In OAuth mode with no org set, the
-    server refuses to start unless ``allow_ungated`` is explicitly enabled, so a
-    missing org fails closed.
+    Auth is driven by configuration and OAuth + keys can run together: with
+    ``MCP_API_KEYS`` a valid Bearer key is the gate; with GitHub OAuth credentials the
+    OAuth flow is served and, when ``allowed_github_org`` is set, OAuth users are gated
+    to active members of that org (key requests bypass the org gate inside the
+    middleware). In OAuth mode with no org set, the server refuses to start unless
+    ``allow_ungated`` is explicitly enabled, so a missing org fails closed.
 
     Args:
         settings: Runtime settings.
@@ -57,11 +58,17 @@ def build_server(settings: Settings) -> FastMCP:
     Returns:
         FastMCP: The configured server.
     """
-    if not settings.key_auth_enabled and not settings.allowed_github_org and not settings.allow_ungated:
+    if not settings.oauth_enabled and not settings.mcp_api_keys:
         raise RuntimeError(
-            'No access gate configured: set MCP_API_KEYS for key-based auth, set '
-            'ALLOWED_GITHUB_ORG to restrict OAuth access to an org, or set ALLOW_UNGATED=1 '
-            'to explicitly allow any authenticated GitHub user. Refusing to start ungated by default.'
+            'No auth configured: set the GitHub OAuth credentials (GITHUB_OAUTH_CLIENT_ID, '
+            'GITHUB_OAUTH_CLIENT_SECRET, BASE_URL, JWT_SIGNING_KEY) for OAuth, and/or set '
+            'MCP_API_KEYS for key-based auth.'
+        )
+    if settings.oauth_enabled and not settings.allowed_github_org and not settings.allow_ungated:
+        raise RuntimeError(
+            'No access gate configured for OAuth users: set ALLOWED_GITHUB_ORG to restrict '
+            'OAuth access to an org, or set ALLOW_UNGATED=1 to explicitly allow any authenticated '
+            'GitHub user. Refusing to start ungated by default.'
         )
 
     cache = TTLCache(settings.cache_ttl_seconds)
@@ -70,9 +77,10 @@ def build_server(settings: Settings) -> FastMCP:
     images = ImageStore(settings.image_store)
 
     server = FastMCP(name='ProductDocs', auth=build_auth(settings))
-    # Org-membership gating only applies to OAuth (it needs the user's GitHub token);
-    # in key-auth mode the key itself is the gate.
-    if not settings.key_auth_enabled and settings.allowed_github_org:
+    # Org-membership gating applies to OAuth users (it needs the user's GitHub token);
+    # key-authenticated requests carry no GitHub identity and bypass it inside the
+    # middleware, the key itself being their gate.
+    if settings.oauth_enabled and settings.allowed_github_org:
         server.add_middleware(OrgMembershipMiddleware(settings.allowed_github_org))
 
     @server.tool

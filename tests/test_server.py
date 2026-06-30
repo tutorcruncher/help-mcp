@@ -75,11 +75,16 @@ def test_build_server_allows_explicit_ungated_optin(settings):
     assert server.name == 'ProductDocs'
 
 
-def test_build_server_key_auth_is_its_own_gate(settings):
-    """Key-based auth lets the server start with no org gate / opt-in, using a key verifier."""
+_NO_OAUTH = dict(github_client_id='', github_client_secret='', base_url='', jwt_signing_key='')
+
+
+def test_build_server_key_only_is_its_own_gate(settings):
+    """Keys + no OAuth: starts with no org gate / opt-in, using a static-token verifier."""
     from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
 
-    key_only = dataclasses.replace(settings, allowed_github_org=None, allow_ungated=False, mcp_api_keys=['secret-key'])
+    key_only = dataclasses.replace(
+        settings, allowed_github_org=None, allow_ungated=False, mcp_api_keys=['secret-key'], **_NO_OAUTH
+    )
 
     server = build_server(key_only)
 
@@ -87,16 +92,34 @@ def test_build_server_key_auth_is_its_own_gate(settings):
     assert isinstance(server.auth, StaticTokenVerifier)
 
 
-async def test_build_server_key_auth_skips_org_middleware(settings):
-    """In key mode the GitHub org-membership middleware is not added (no GitHub identity)."""
+def test_build_server_no_auth_configured_refuses(settings):
+    """Neither OAuth nor keys → refuses to start."""
+    none = dataclasses.replace(settings, allowed_github_org=None, mcp_api_keys=[], **_NO_OAUTH)
+    with pytest.raises(RuntimeError, match='No auth configured'):
+        build_server(none)
+
+
+async def test_build_server_key_only_skips_org_middleware(settings):
+    """Key-only mode adds no org middleware (no GitHub identity to check)."""
     from app.access import OrgMembershipMiddleware
 
-    key_mode = dataclasses.replace(settings, mcp_api_keys=['secret-key'])
-    server = build_server(key_mode)
+    key_only = dataclasses.replace(settings, mcp_api_keys=['secret-key'], **_NO_OAUTH)
+    server = build_server(key_only)
 
     assert not any(isinstance(m, OrgMembershipMiddleware) for m in server.middleware)
-    # Tools are still registered as normal.
     assert {tool.name for tool in await server._list_tools()} == EXPECTED_TOOLS
+
+
+def test_build_server_dual_auth_keeps_org_middleware(settings):
+    """Dual (OAuth + keys) with an org set keeps the org gate; it bypasses key requests internally."""
+    from app.access import OrgMembershipMiddleware
+    from app.auth import DualAuthProvider
+
+    dual = dataclasses.replace(settings, allowed_github_org='tutorcruncher', mcp_api_keys=['secret-key'])
+    server = build_server(dual)
+
+    assert isinstance(server.auth, DualAuthProvider)
+    assert any(isinstance(m, OrgMembershipMiddleware) for m in server.middleware)
 
 
 async def test_build_server_registers_all_tools(settings):

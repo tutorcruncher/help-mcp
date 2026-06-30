@@ -16,6 +16,8 @@ from fastmcp.exceptions import ToolError
 from fastmcp.server.dependencies import get_access_token
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 
+from app.auth import AUTH_MODE_CLAIM, KEY_AUTH_MODE
+
 GITHUB_API = 'https://api.github.com'
 
 logger = logging.getLogger('tc_help_mcp.access')
@@ -86,6 +88,9 @@ class OrgMembershipMiddleware(Middleware):
         if access is None:
             logger.info('access check: no authenticated token in request context')
             return False
+        if access.claims and access.claims.get(AUTH_MODE_CLAIM) == KEY_AUTH_MODE:
+            logger.info('access check: key-authenticated request bypasses org gate')
+            return True
         login = access.claims.get('login') if access.claims else None
         allowed = await self._is_member(access.token)
         logger.info('access check login=%s org=%s allowed=%s', login, self.org, allowed)

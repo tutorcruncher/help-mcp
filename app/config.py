@@ -18,14 +18,6 @@ KNOWN_HELP_PRODUCTS: list[tuple[str, str]] = [
 ]
 
 
-def _require(name: str) -> str:
-    """Return a required environment variable or raise a clear error."""
-    value = os.environ.get(name)
-    if not value:
-        raise RuntimeError(f'Missing required environment variable: {name}')
-    return value
-
-
 @dataclass(frozen=True)
 class HelpSource:
     """One Intercom help-centre workspace.
@@ -131,8 +123,17 @@ class Settings:
 
     @property
     def key_auth_enabled(self) -> bool:
-        """True when static API-key auth is configured (takes precedence over OAuth)."""
+        """True when static API-key auth is configured."""
         return bool(self.mcp_api_keys)
+
+    @property
+    def oauth_enabled(self) -> bool:
+        """True when all GitHub OAuth credentials are configured.
+
+        OAuth and key auth are not mutually exclusive: when both this and
+        ``key_auth_enabled`` are true, the server serves OAuth *and* accepts keys.
+        """
+        return bool(self.github_client_id and self.github_client_secret and self.base_url and self.jwt_signing_key)
 
     def help_source(self, product: str) -> HelpSource | None:
         """Return the configured help source for a product, or None if absent."""
@@ -173,23 +174,16 @@ def _load_image_store() -> ImageStoreConfig:
 def load_settings() -> Settings:
     """Build a Settings instance from the current environment.
 
-    In key-auth mode (``MCP_API_KEYS`` set) the GitHub OAuth credentials are not
-    required, so the server can run with just API keys + Intercom tokens. In OAuth
-    mode they remain required and a missing one fails fast.
+    Auth is driven by what's configured (see Settings.oauth_enabled / key_auth_enabled):
+    the GitHub OAuth credentials and ``MCP_API_KEYS`` are all optional here, and either
+    (or both) may be set. ``build_server`` fails closed if neither is configured.
     """
-    api_keys = _load_api_keys()
-    key_auth = bool(api_keys)
-
-    def _oauth_required(name: str) -> str:
-        """Required in OAuth mode; optional (default empty) in key-auth mode."""
-        return (os.environ.get(name) or '') if key_auth else _require(name)
-
     return Settings(
-        github_client_id=_oauth_required('GITHUB_OAUTH_CLIENT_ID'),
-        github_client_secret=_oauth_required('GITHUB_OAUTH_CLIENT_SECRET'),
-        base_url=_oauth_required('BASE_URL').rstrip('/'),
+        github_client_id=os.environ.get('GITHUB_OAUTH_CLIENT_ID', ''),
+        github_client_secret=os.environ.get('GITHUB_OAUTH_CLIENT_SECRET', ''),
+        base_url=(os.environ.get('BASE_URL') or '').rstrip('/'),
         github_scopes=os.environ.get('GITHUB_SCOPES', 'read:org read:user').split(),
-        jwt_signing_key=_oauth_required('JWT_SIGNING_KEY'),
+        jwt_signing_key=os.environ.get('JWT_SIGNING_KEY', ''),
         allowed_github_org=os.environ.get('ALLOWED_GITHUB_ORG') or None,
         allow_ungated=os.environ.get('ALLOW_UNGATED', '0') == '1',
         allowed_redirect_uris=os.environ.get(
@@ -205,5 +199,5 @@ def load_settings() -> Settings:
         search_result_limit=int(os.environ.get('SEARCH_RESULT_LIMIT', '8')),
         port=int(os.environ.get('PORT', '8000')),
         image_store=_load_image_store(),
-        mcp_api_keys=api_keys,
+        mcp_api_keys=_load_api_keys(),
     )
