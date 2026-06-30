@@ -214,7 +214,7 @@ def build_server(settings: Settings) -> FastMCP:
         Replaces every occurrence of old_src with new_url in the raw body and saves a
         draft — a surgical string swap that preserves the rest of the HTML exactly.
         Errors if old_src is not present. Get old_src from get_help_article_raw and
-        new_url from upload_help_image.
+        new_url (the public_url) from request_help_image_upload.
 
         Args:
             product: The product the article belongs to ("tutorcruncher" or "bobbin").
@@ -226,21 +226,25 @@ def build_server(settings: Settings) -> FastMCP:
 
     @server.tool
     @_readable_errors
-    async def upload_help_image(product: str, image_path: str) -> dict:
-        """Host a local image file in the configured store and return its public URL.
+    async def request_help_image_upload(product: str, filename: str) -> dict:
+        """Get a short-lived URL to upload a local screenshot to the image store.
 
-        Intercom has no image-upload API, so a refreshed screenshot is hosted
-        externally and embedded by URL. The image is stored under the product's own
-        sub-folder in the bucket. Returns {"url": "..."} for use as new_url in
-        replace_help_article_image.
+        Intercom has no image-upload API, so a screenshot is hosted externally and
+        embedded by URL. This server is remote and cannot read your local files, so
+        it returns a presigned PUT URL: upload the local file's bytes directly to
+        `put_url` (e.g. `curl -sS -X PUT --upload-file <local_path> "<put_url>"`),
+        then use `public_url` as new_url in replace_help_article_image or as an
+        <img src> in an article body. Do NOT read the image into context.
+
+        Returns {"put_url": "...", "public_url": "..."}.
 
         Args:
             product: The product the image belongs to ("tutorcruncher" or "bobbin");
                 used as the bucket sub-folder so each product's screenshots are separate.
-            image_path: Absolute path to the image file on disk.
+            filename: The image filename (used for the stored object's name + extension),
+                e.g. "tutors-add-dialog.png".
         """
-        url = await asyncio.to_thread(images.upload, image_path, product)
-        return {'url': url}
+        return await asyncio.to_thread(images.presign_put, filename, product)
 
     return server
 

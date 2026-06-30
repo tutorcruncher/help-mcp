@@ -47,7 +47,7 @@ EXPECTED_TOOLS = {
     'update_help_article',
     'create_help_article',
     'replace_help_article_image',
-    'upload_help_image',
+    'request_help_image_upload',
 }
 
 
