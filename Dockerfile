@@ -11,9 +11,11 @@ ENV UV_LINK_MODE=copy \
     UV_PROJECT_ENVIRONMENT=/app/.venv \
     PATH="/app/.venv/bin:$PATH"
 
-# Install dependencies first (layer-cached on lockfile changes only).
+# Install dependencies first (layer-cached on lockfile changes only). The "s3" extra
+# pulls in boto3, needed by the image-hosting (upload_help_image) write tool; without
+# it that tool fails at runtime with a "install the s3 extra" error.
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project
+RUN uv sync --frozen --no-dev --extra s3 --no-install-project
 
 # Application code.
 COPY app ./app
