@@ -226,17 +226,20 @@ def build_server(settings: Settings) -> FastMCP:
 
     @server.tool
     @_readable_errors
-    async def upload_help_image(image_path: str) -> dict:
+    async def upload_help_image(product: str, image_path: str) -> dict:
         """Host a local image file in the configured store and return its public URL.
 
         Intercom has no image-upload API, so a refreshed screenshot is hosted
-        externally and embedded by URL. Returns {"url": "..."} for use as new_url in
+        externally and embedded by URL. The image is stored under the product's own
+        sub-folder in the bucket. Returns {"url": "..."} for use as new_url in
         replace_help_article_image.
 
         Args:
+            product: The product the image belongs to ("tutorcruncher" or "bobbin");
+                used as the bucket sub-folder so each product's screenshots are separate.
             image_path: Absolute path to the image file on disk.
         """
-        url = await asyncio.to_thread(images.upload, image_path)
+        url = await asyncio.to_thread(images.upload, image_path, product)
         return {'url': url}
 
     return server

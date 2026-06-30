@@ -59,17 +59,24 @@ class ImageStore:
         self._client = boto3.client('s3', region_name=self._config.region)
         return self._client
 
-    def _key_for(self, path: Path, data: bytes) -> str:
-        """Build the storage key: ``<prefix>/<stem>-<hash8><suffix>``."""
+    def _key_for(self, path: Path, data: bytes, product: str | None = None) -> str:
+        """Build the storage key: ``<prefix>/<product>/<stem>-<hash8><suffix>``.
+
+        Empty path segments are dropped, so the key is ``<product>/<file>`` when no
+        base prefix is set, ``<prefix>/<file>`` when no product is given, etc.
+        """
         digest = hashlib.sha256(data).hexdigest()[:8]
         name = f'{path.stem}-{digest}{path.suffix}'
-        return '/'.join(part for part in (self._config.key_prefix, name) if part)
+        return '/'.join(part for part in (self._config.key_prefix, product, name) if part)
 
-    def upload(self, image_path: str) -> str:
+    def upload(self, image_path: str, product: str | None = None) -> str:
         """Upload a local image file and return its public URL.
 
         Args:
             image_path: Absolute path to the image on disk.
+            product: Optional product id used as a key sub-folder (e.g. "bobbin" →
+                ``<prefix>/bobbin/<file>``), so each product's screenshots are kept
+                under its own path in the bucket.
 
         Returns:
             The public URL the uploaded image is served from.
@@ -84,7 +91,7 @@ class ImageStore:
         if not path.is_file():
             raise ImageStoreError(f'Image not found: {image_path}')
         data = path.read_bytes()
-        key = self._key_for(path, data)
+        key = self._key_for(path, data, product)
         content_type = mimetypes.guess_type(path.name)[0] or 'application/octet-stream'
         try:
             self._s3().put_object(Bucket=self._config.bucket, Key=key, Body=data, ContentType=content_type)
